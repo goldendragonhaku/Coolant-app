@@ -14,25 +14,27 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="Coolant Pro v37", layout="wide")
+st.set_page_config(page_title="Coolant Pro v40", layout="wide")
 
-# --- SESSION STATE INITIALIZATION ---
-if "notes" not in st.session_state:
-    st.session_state.notes = ""
+# --- 1. MASTER STATE & NOTE LOGIC ---
+if "master_notes" not in st.session_state:
+    st.session_state.master_notes = ""
 
-def sync_notes():
-    # Only sync if the widget exists in the current rerun
-    if "notes_widget" in st.session_state:
-        st.session_state.notes = st.session_state.notes_widget
+def update_master_from_box():
+    """Syncs manual typing to master memory."""
+    st.session_state.master_notes = st.session_state.notes_widget
 
-def handle_note_click(text):
-    # Add the new note to the master 'notes' string
-    st.session_state.notes += f"{text}. "
-    # We delete the widget key so the text area re-renders with the new master string
-    if "notes_widget" in st.session_state:
-        del st.session_state["notes_widget"]
+def add_quick_note(text):
+    """Appends button text to master memory and updates widget."""
+    st.session_state.master_notes += f"{text}. "
+    st.session_state.notes_widget = st.session_state.master_notes
 
-# --- 1. SIDEBAR ---
+def clear_notes():
+    """Wipes note memory and widget."""
+    st.session_state.master_notes = ""
+    st.session_state.notes_widget = ""
+
+# --- 2. SIDEBAR ---
 with st.sidebar:
     st.header("🏢 Shop Selection")
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
@@ -46,7 +48,7 @@ with st.sidebar:
     t_conc = st.number_input("Target Conc %", value=8.0, step=0.5)
     t_ph = st.number_input("Min pH Target", value=8.8, step=0.1)
     
-    # Excel Export with Fixes
+    # Export Report (.xlsx)
     if customer:
         df_export = pd.read_sql_query(f"SELECT date, m_id, coolant, vol, brix, ri, conc, ph, notes FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
         if not df_export.empty:
@@ -60,9 +62,9 @@ with st.sidebar:
                 worksheet.conditional_format('H2:H1000', {'type': 'cell', 'criteria': '<', 'value': t_ph, 'format': red})
             st.download_button("📥 Export .xlsx", output.getvalue(), f"{customer.replace(' ','_')}_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.title("🧪 Coolant Pro Analytics v37")
+st.title("🧪 Coolant Pro Analytics v40")
 
-# --- 2. MAIN INTERFACE ---
+# --- 3. MAIN INTERFACE ---
 col_main, col_chart = st.columns([1, 1])
 
 with col_main:
@@ -70,17 +72,14 @@ with col_main:
         st.subheader("⚙️ Machine Entry")
         log_date = st.date_input("Service Date", value=date.today())
         
-        # Machine Selection
         c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
         existing_machines = [row[0] for row in c.fetchall() if row[0]]
         m_choice = st.selectbox("Select Machine", ["+ New Machine"] + existing_machines)
         m_id = st.text_input("Machine ID Entry", value="" if m_choice == "+ New Machine" else m_choice)
 
-        # Multi-Coolant Logic (RESTORED)
         multi_coolant = st.toggle("Use machine-specific coolant?")
-        active_coolant = st.text_input("Specific Coolant Name", placeholder="e.g. Special Alloy Fluid") if multi_coolant else shop_cool_name
+        active_coolant = st.text_input("Specific Coolant Name", placeholder="e.g. Special Fluid") if multi_coolant else shop_cool_name
         
-        # Recall Data
         last_vol, last_ri = 100.0, 1.0
         if m_choice != "+ New Machine":
             c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY id DESC LIMIT 1", (m_id, customer))
@@ -95,7 +94,6 @@ with col_main:
         brix = c3.number_input("Brix Reading", min_value=0.0, format="%.1f")
         ph = c4.number_input("Current pH", min_value=0.0, format="%.1f")
 
-        # Analysis Calculation
         actual_conc = round(brix * ri, 2)
         if brix > 0:
             st.markdown("### 📊 Recommendations")
@@ -103,46 +101,42 @@ with col_main:
             with r1:
                 st.metric("Conc", f"{actual_conc}%", delta=round(actual_conc - t_conc, 2))
                 if actual_conc < t_conc:
-                    re_gal = round(((t_conc - actual_conc) / 100) * vol, 2)
-                    st.warning(f"💡 Add **{re_gal} Gal** concentrate.")
+                    st.warning(f"💡 Add **{round(((t_conc - actual_conc)/100)*vol, 2)} Gal** conc.")
             with r2:
                 st.metric("pH", ph, delta=round(ph - t_ph, 2))
                 if 0 < ph < t_ph:
-                    re_oz = round((vol / 100) * 16, 1)
-                    st.error(f"🚨 Add **{re_oz} oz** pH Boost 95.")
+                    st.error(f"🚨 Add **{round((vol/100)*16, 1)} oz** pH Boost 95")
 
-# --- 3. TREND CHART ---
 with col_chart:
     st.subheader(f"📈 Trend: {m_id if m_id else ''}")
     if m_id and customer:
         history = pd.read_sql_query(f"SELECT date, conc FROM logs WHERE customer='{customer}' AND m_id='{m_id}' ORDER BY date ASC", conn)
         if not history.empty:
             history['date'] = pd.to_datetime(history['date'])
-            chart = alt.Chart(history).mark_line(point=True).encode(
-                x='date:T', y=alt.Y('conc:Q', title='Conc %'), tooltip=['date', 'conc']
-            ).properties(height=350)
+            chart = alt.Chart(history).mark_line(point=True).encode(x='date:T', y='conc:Q').properties(height=350)
             st.altair_chart(chart, use_container_width=True)
 
-# --- 4. OBSERVATIONS & BUTTONS (SYNCED) ---
+# --- 4. OBSERVATIONS & SYNCED BUTTONS ---
 st.markdown("---")
 st.subheader("📝 Field Observations")
 
-st.text_area("Notes", value=st.session_state.notes, key="notes_widget", on_change=sync_notes)
+st.text_area("Notes", value=st.session_state.master_notes, key="notes_widget", on_change=update_master_from_box, height=120)
 
-q_cols = st.columns(5)
-if q_cols[0].button("Added pH Boost"): handle_note_click("Added pH Boost")
-if q_cols[1].button("Added Fungicide"): handle_note_click("Added Fungicide")
-if q_cols[2].button("Added Defoamer"): handle_note_click("Added Defoamer")
-if q_cols[3].button("Added Biocide"): handle_note_click("Added Biocide")
-if q_cols[4].button("Recommend DCR"): handle_note_click("Recommend DCR")
+# Quick Add & Clear Buttons
+q_cols = st.columns([1, 1, 1, 1, 1, 1])
+if q_cols[0].button("Added pH Boost"): add_quick_note("Added pH Boost")
+if q_cols[1].button("Added Fungicide"): add_quick_note("Added Fungicide")
+if q_cols[2].button("Added Defoamer"): add_quick_note("Added Defoamer")
+if q_cols[3].button("Added Biocide"): add_quick_note("Added Biocide")
+if q_cols[4].button("Recommend DCR"): add_quick_note("Recommend DCR")
+if q_cols[5].button("🗑️ CLEAR ALL", type="secondary"): clear_notes()
 
 # --- 5. SAVE ---
 if st.button("💾 SAVE MACHINE LOG", use_container_width=True, type="primary"):
     if customer and m_id:
         c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.notes, str(log_date)))
+                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(log_date)))
         conn.commit()
         st.success(f"Saved {m_id}!")
-        st.session_state.notes = "" # Reset
-        if "notes_widget" in st.session_state: del st.session_state["notes_widget"]
+        clear_notes() # Reset notes for next unit
         st.rerun()
