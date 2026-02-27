@@ -92,9 +92,10 @@ notes_area = st.text_area("Observations", value=st.session_state.notes)
 # Quick Note Buttons
 q_cols = st.columns(4)
 if q_cols[0].button("Added pH Boost"): st.session_state.notes += "Added pH Boost. "; st.rerun()
-if q_cols[1].button("Added fungicide"): st.session_state.notes += "Added fungicide. "; st.rerun()
+if q_cols[1].button("Added Fungicide"): st.session_state.notes += "Added fungicide. "; st.rerun()
 if q_cols[2].button("Added Defoamer"): st.session_state.notes += "Added Defoamer. "; st.rerun()
-if q_cols[3].button("Recommend DCR"): st.session_state.notes += "Recommend DCR. "; st.rerun()
+if q_cols[3].button("Added Biocide"): st.session_state.notes += "Recommend DCR. "; st.rerun()
+if q_cols[4].button("Recommend DCR"): st.session_state.notes += "Recommend DCR. "; st.rerun()
 
 if st.button("💾 SAVE MACHINE LOG", use_container_width=True, type="primary"):
     c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
