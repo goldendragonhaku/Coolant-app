@@ -14,7 +14,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="QualiServ Pro v64", layout="wide")
+st.set_page_config(page_title="QualiServ Pro v65", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
 
@@ -24,29 +24,24 @@ st.markdown(f"""
     section[data-testid="stSidebar"] {{ background-color: {QC_BLUE} !important; border-right: 2px solid {QC_GREEN} !important; }}
     h1, h2, h3, p, span, label, .stMarkdown {{ color: white !important; }}
     .green-text {{ color: {QC_GREEN} !important; font-weight: bold; }}
+    .hint-text {{ color: #bdc3c7 !important; font-size: 11px !important; font-style: italic !important; }}
     input, div[data-baseweb="select"], div[data-baseweb="input"], textarea {{ background-color: #ffffff !important; color: #000000 !important; border-radius: 5px !important; }}
     div.stButton > button {{ background-color: {QC_GREEN} !important; color: {QC_DARK_BLUE} !important; font-weight: bold !important; border: none !important; width: 100% !important; }}
     [data-testid="stMetricValue"] {{ color: {QC_GREEN} !important; font-size: 32px !important; }}
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. RECALL LOGIC ---
-
+# --- 2. RECALL ENGINE ---
 def recall_shop_specs():
-    """Triggered when Shop changes: Recalls Product, Target Conc, and Target pH"""
     target_shop = st.session_state.shop_choice_widget
     if target_shop != "+ New Shop":
-        # We query the last log for this shop to get the product used
         c.execute("SELECT coolant FROM logs WHERE customer=? ORDER BY date DESC LIMIT 1", (target_shop,))
         res = c.fetchone()
-        if res:
-            st.session_state.shop_product_input = res[0]
-            # You can also add logic here to recall specific targets if you save them elsewhere
+        if res: st.session_state.shop_product_input = res[0]
     else:
         st.session_state.shop_product_input = ""
 
 def recall_machine_specs():
-    """Triggered when Machine changes: Recalls Vol and RI"""
     target_m = st.session_state.m_choice_widget
     if target_m != "+ New Machine":
         c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY date DESC LIMIT 1", (target_m, customer))
@@ -58,7 +53,6 @@ def recall_machine_specs():
         st.session_state.vol_input = 100.0
         st.session_state.ri_input = 1.0
 
-# Initialize session states
 if "shop_product_input" not in st.session_state: st.session_state.shop_product_input = ""
 if "vol_input" not in st.session_state: st.session_state.vol_input = 100.0
 if "ri_input" not in st.session_state: st.session_state.ri_input = 1.0
@@ -66,25 +60,21 @@ if "ri_input" not in st.session_state: st.session_state.ri_input = 1.0
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
-    
-    # Shop Selector with Recall Callback
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
     shops = [r[0] for r in c.fetchall() if r[0]]
     shop_choice = st.selectbox("Select Shop", ["+ New Shop"] + shops, key="shop_choice_widget", on_change=recall_shop_specs)
     customer = st.text_input("Active Shop Name", value="" if shop_choice == "+ New Shop" else shop_choice)
     
-    # Product Field tied to Shop Recall
     c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
     coolants = [r[0] for r in c.fetchall() if r[0]]
-    cool_choice = st.selectbox("Shop Base Product", ["+ New"] + coolants)
+    cool_choice = st.selectbox("Base Shop Product", ["+ New"] + coolants)
     shop_coolant = st.text_input("Product Name", key="shop_product_input")
     
     st.markdown("---")
-    
     with st.expander("💾 DATA MANAGEMENT"):
         with open(DB_NAME, 'rb') as f:
-            st.download_button("Download DB (.db)", f, file_name="qualiserv_backup.db")
-        up_db = st.file_uploader("Upload DB (.db)", type="db")
+            st.download_button("Download DB", f, file_name="qualiserv_backup.db")
+        up_db = st.file_uploader("Upload DB", type="db")
         if up_db:
             with open(DB_NAME, "wb") as f: f.write(up_db.getbuffer())
             st.rerun()
@@ -114,7 +104,6 @@ with col_in:
     st.markdown("### <span class='green-text'>Machine Data Entry</span>", unsafe_allow_html=True)
     service_date = st.date_input("Service Date", value=date.today())
     
-    # Machine Selector with Recall Callback
     c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
     machines = [r[0] for r in c.fetchall() if r[0]]
     m_choice = st.selectbox("Select Machine", ["+ New Machine"] + machines, key="m_choice_widget", on_change=recall_machine_specs)
@@ -123,14 +112,14 @@ with col_in:
     m_cool_toggle = st.toggle("Machine-specific product?")
     active_coolant = st.text_input("Product Override", value=shop_coolant) if m_cool_toggle else shop_coolant
 
-    # Auto-Populating Fields
     c1, c2 = st.columns(2)
-    vol = c1.number_input("Sump Volume", key="vol_input")
-    ri = c2.number_input("RI Factor", key="ri_input")
+    # Added "Enter to apply" hints to labels
+    vol = c1.number_input("Sump Volume (Gal) ↵", key="vol_input", help="Press Enter to update analysis")
+    ri = c2.number_input("RI Factor ↵", key="ri_input", help="Press Enter to update analysis")
     
     c3, c4 = st.columns(2)
-    brix = c3.number_input("Brix Reading", min_value=0.0)
-    ph = c4.number_input("pH Reading", min_value=0.0)
+    brix = c3.number_input("Brix Reading ↵", min_value=0.0, help="Press Enter to update analysis")
+    ph = c4.number_input("pH Reading ↵", min_value=0.0, help="Press Enter to update analysis")
 
     actual_conc = round(brix * ri, 2)
     if brix > 0:
@@ -148,10 +137,10 @@ with col_chart:
             chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
             st.altair_chart(chart, use_container_width=True)
 
-# --- 5. OBSERVATIONS ---
+# --- 5. OBSERVATIONS (HINTS RESTORED) ---
 st.markdown("---")
-st.markdown("### <span class='green-text'>Observations</span>", unsafe_allow_html=True)
-user_notes = st.text_area("Field Notes", height=120, label_visibility="collapsed")
+st.markdown(f"### <span class='green-text'>Observations</span> <span class='hint-text'>(Press Cmd+Enter to confirm)</span>", unsafe_allow_html=True)
+user_notes = st.text_area("Field Notes", height=120, label_visibility="collapsed", placeholder="Type notes here... Press Cmd+Enter to finalize before saving.")
 
 if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
     if customer and m_id:
