@@ -21,10 +21,14 @@ if "notes" not in st.session_state:
     st.session_state.notes = ""
 
 def sync_notes():
-    st.session_state.notes = st.session_state.notes_widget
+    # Only sync if the widget exists in the current rerun
+    if "notes_widget" in st.session_state:
+        st.session_state.notes = st.session_state.notes_widget
 
 def handle_note_click(text):
+    # Add the new note to the master 'notes' string
     st.session_state.notes += f"{text}. "
+    # We delete the widget key so the text area re-renders with the new master string
     if "notes_widget" in st.session_state:
         del st.session_state["notes_widget"]
 
