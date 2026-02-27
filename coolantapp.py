@@ -14,7 +14,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="QualiServ Pro", layout="wide")
+st.set_page_config(page_title="QualiServ Pro v58", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
 
@@ -42,7 +42,7 @@ def add_quick_note(text):
     st.session_state.master_notes += f"{text}. "
     st.rerun()
 
-# --- 3. SIDEBAR: SHOP & DATA MANAGEMENT ---
+# --- 3. SIDEBAR: SHOP & EXCEL & TOOLS ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
     
@@ -54,10 +54,16 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # EXCEL EXPORT (RESTORED)
+    # Base Coolant Selection
+    c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
+    coolants = [r[0] for r in c.fetchall() if r[0]]
+    cool_choice = st.selectbox("Base Shop Product", ["+ New"] + coolants)
+    shop_coolant = st.text_input("Product Name", value="" if cool_choice == "+ New" else cool_choice)
+    
+    # EXCEL EXPORT
     if customer:
         st.subheader("📊 Reports")
-        df_exp = pd.read_sql_query(f"SELECT * FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
+        df_exp = pd.read_sql_query(f"SELECT date, m_id, coolant, conc, ph, notes FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
         if not df_exp.empty:
             out = io.BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
@@ -65,17 +71,12 @@ with st.sidebar:
             st.download_button("📥 Export Shop Excel", out.getvalue(), f"{customer}_Report.xlsx")
 
     st.markdown("---")
-    # DB IMPORT/EXPORT
     with st.expander("💾 Database Tools"):
         with open(DB_NAME, 'rb') as f:
             st.download_button("Download DB (.db)", f, file_name="qualiserv_backup.db")
         up_db = st.file_uploader("Upload DB (.db)", type="db")
         if up_db:
             with open(DB_NAME, "wb") as f: f.write(up_db.getbuffer())
-            st.rerun()
-        up_xl = st.file_uploader("Import Excel (.xlsx)", type="xlsx")
-        if up_xl:
-            pd.read_excel(up_xl).to_sql('logs', conn, if_exists='append', index=False)
             st.rerun()
 
     st.markdown("---")
@@ -84,19 +85,28 @@ with st.sidebar:
 
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
 
-# --- 4. MAIN DASHBOARD: MACHINE & RECALL ---
+# --- 4. MAIN DASHBOARD ---
 col_in, col_chart = st.columns([1, 1], gap="large")
 
 with col_in:
     st.markdown("### <span class='green-text'>Machine Data Entry</span>", unsafe_allow_html=True)
     
-    # MACHINE SELECTOR (RESTORED)
+    # Machine Selector
     c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
     machines = [r[0] for r in c.fetchall() if r[0]]
     m_choice = st.selectbox("Select Machine", ["+ New Machine"] + machines)
     m_id = st.text_input("Machine ID", value="" if m_choice == "+ New Machine" else m_choice)
 
-    # RECALL LOGIC (RESTORED)
+    # --- RESTORED: MULTI-COOLANT TOGGLE ---
+    m_cool_toggle = st.toggle("Machine-specific product?")
+    if m_cool_toggle:
+        # Get machine-specific coolant dropdown
+        m_cool_choice = st.selectbox("Specific Coolant", ["+ New"] + coolants)
+        active_coolant = st.text_input("Override Product", value="" if m_cool_choice == "+ New" else m_cool_choice)
+    else:
+        active_coolant = shop_coolant
+
+    # Auto-Recall History
     last_vol, last_ri = 100.0, 1.0
     if m_choice != "+ New Machine":
         c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY id DESC LIMIT 1", (m_id, customer))
@@ -117,10 +127,6 @@ with col_in:
         m1, m2 = st.columns(2)
         m1.metric("Conc", f"{actual_conc}%", delta=round(actual_conc - t_conc, 2))
         m2.metric("pH", ph, delta=round(ph - t_ph, 2))
-        if actual_conc < t_conc:
-            st.warning(f"💡 Add {round(((t_conc - actual_conc)/100)*vol, 2)} Gal Concentrate")
-        if 0 < ph < t_ph:
-            st.error(f"🚨 Add {round((vol/100)*16, 1)} oz pH Boost 95")
 
 with col_chart:
     st.markdown("### <span class='green-text'>Trend History</span>", unsafe_allow_html=True)
@@ -131,7 +137,7 @@ with col_chart:
             chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
             st.altair_chart(chart, use_container_width=True)
 
-# --- 5. OBSERVATIONS (FIXED SYNC) ---
+# --- 5. OBSERVATIONS ---
 st.markdown("---")
 st.text_area("Notes", value=st.session_state.master_notes, key="notes_widget", on_change=sync_notes, height=120)
 
@@ -148,8 +154,8 @@ if btns[5].button("🗑️ CLEAR"):
 if st.button("💾 SAVE LOG", use_container_width=True):
     sync_notes()
     if customer and m_id:
-        c.execute("INSERT INTO logs (customer, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?)",
-                  (customer, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(date.today())))
+        c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(date.today())))
         conn.commit()
         st.session_state.master_notes = ""
         st.success(f"Saved {m_id}!")
