@@ -5,16 +5,15 @@ import io
 import altair as alt
 from datetime import datetime, date
 
-# --- DATABASE SETUP ---
+# --- 1. DATABASE SETUP ---
 conn = sqlite3.connect('qualiserv_pro.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS logs 
              (id INTEGER PRIMARY KEY AUTOINCREMENT, customer TEXT, coolant TEXT, m_id TEXT, 
-              metal TEXT, alloy TEXT, vol REAL, ri REAL, brix REAL, conc REAL, 
-              ph REAL, notes TEXT, date TEXT)''')
+              vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-# --- THE "NIGHT VISION" CSS ---
+# --- 2. NIGHT-VISION CSS (FORCED CONTRAST) ---
 st.set_page_config(page_title="QualiServ Pro", layout="wide")
 
 QC_BLUE = "#00529B"
@@ -23,111 +22,137 @@ QC_GREEN = "#78BE20"
 
 st.markdown(f"""
     <style>
-    /* 1. MAIN BACKGROUND: DEEP NAVY */
-    .stApp {{
-        background-color: {QC_DARK_BLUE} !important;
-        color: white !important;
-    }}
-
-    /* 2. SIDEBAR: QUALICHEM BLUE */
-    section[data-testid="stSidebar"] {{
-        background-color: {QC_BLUE} !important;
-        border-right: 2px solid {QC_GREEN} !important;
-    }}
-
-    /* 3. TEXT COLOR FORCING (GREEN & WHITE) */
-    h1, h2, h3, p, span, label, .stMarkdown {{
-        color: white !important;
-    }}
-    
-    /* Highlight Titles in Green */
-    .green-text {{
-        color: {QC_GREEN} !important;
-        font-weight: bold;
-    }}
-
-    /* 4. INPUT BOXES: HIGH CONTRAST */
-    input, div[data-baseweb="select"] {{
-        background-color: #ffffff !important;
-        color: #000000 !important;
-        border-radius: 5px !important;
-    }}
-
-    /* 5. BRANDED BUTTONS (GREEN) */
-    div.stButton > button {{
-        background-color: {QC_GREEN} !important;
-        color: {QC_DARK_BLUE} !important;
-        font-weight: bold !important;
-        border: none !important;
-        width: 100% !important;
-    }}
-
-    /* 6. METRIC BOXES */
-    [data-testid="stMetricValue"] {{
-        color: {QC_GREEN} !important;
-    }}
+    .stApp {{ background-color: {QC_DARK_BLUE} !important; color: white !important; }}
+    section[data-testid="stSidebar"] {{ background-color: {QC_BLUE} !important; border-right: 2px solid {QC_GREEN} !important; }}
+    h1, h2, h3, p, span, label, .stMarkdown {{ color: white !important; }}
+    .green-text {{ color: {QC_GREEN} !important; font-weight: bold; }}
+    input, div[data-baseweb="select"], div[data-baseweb="input"] {{ background-color: #ffffff !important; color: #000000 !important; border-radius: 5px !important; }}
+    div.stButton > button {{ background-color: {QC_GREEN} !important; color: {QC_DARK_BLUE} !important; font-weight: bold !important; border: none !important; width: 100% !important; }}
+    [data-testid="stMetricValue"] {{ color: {QC_GREEN} !important; font-size: 32px !important; }}
     </style>
 """, unsafe_allow_html=True)
 
-# --- MASTER STATE ---
+# --- 3. SESSION STATE FOR NOTES ---
 if "master_notes" not in st.session_state: st.session_state.master_notes = ""
+def update_master_from_box(): st.session_state.master_notes = st.session_state.notes_widget
+def add_quick_note(text):
+    st.session_state.master_notes += f"{text}. "
+    st.session_state.notes_widget = st.session_state.master_notes
+def clear_notes():
+    st.session_state.master_notes = ""
+    if "notes_widget" in st.session_state: st.session_state.notes_widget = ""
 
-# --- 1. SIDEBAR ---
+# --- 4. SIDEBAR: SHOP & COOLANT SELECTION ---
 with st.sidebar:
     st.markdown(f"<h1 style='text-align: center;'>QualiServ</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center;' class='green-text'>PRO ANALYTICS</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center;' class='green-text'>FIELD ANALYTICS</p>", unsafe_allow_html=True)
     st.markdown("---")
     
+    # Shop Dropdown
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
     existing_shops = [row[0] for row in c.fetchall() if row[0]]
-    customer = st.selectbox("Shop Name", existing_shops)
+    shop_choice = st.selectbox("Select Shop", ["+ New Shop"] + existing_shops)
+    customer = st.text_input("Active Shop", value="" if shop_choice == "+ New Shop" else shop_choice)
     
-    st.markdown("---")
-    t_conc = st.number_input("Target %", value=8.0)
-    t_ph = st.number_input("Min pH", value=8.8)
+    # Target Specs
+    c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
+    all_coolants = [row[0] for row in c.fetchall() if row[0]]
+    cool_choice = st.selectbox("Base Coolant", ["+ New Coolant"] + all_coolants)
+    shop_cool_name = st.text_input("Base Product", value="" if cool_choice == "+ New Coolant" else cool_choice)
+    
+    t_conc = st.number_input("Target %", value=8.0, step=0.5)
+    t_ph = st.number_input("Min pH", value=8.8, step=0.1)
+    
+    # Branded Excel Export
+    if customer:
+        st.markdown("---")
+        df_export = pd.read_sql_query(f"SELECT date, m_id, coolant, conc, ph, notes FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
+        if not df_export.empty:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_export.to_excel(writer, index=False, sheet_name='QualiServ Report')
+                workbook, worksheet = writer.book, writer.sheets['QualiServ Report']
+                h_fmt = workbook.add_format({'bold': True, 'font_color': 'white', 'bg_color': QC_BLUE})
+                for col_num, val in enumerate(df_export.columns.values): worksheet.write(0, col_num, val, h_fmt)
+            st.download_button("📥 Export Branded .xlsx", output.getvalue(), f"QualiServ_{customer.replace(' ','_')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# --- 2. MAIN HEADER ---
+# --- 5. MAIN DASHBOARD ---
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
 
 col_main, col_chart = st.columns([1, 1], gap="large")
 
 with col_main:
-    st.markdown(f"### <span class='green-text'>Machine Entry</span>", unsafe_allow_html=True)
-    m_id = st.text_input("Machine ID")
+    st.markdown(f"### <span class='green-text'>Machine Data Entry</span>", unsafe_allow_html=True)
+    log_date = st.date_input("Service Date", value=date.today())
     
+    c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
+    existing_machines = [row[0] for row in c.fetchall() if row[0]]
+    m_choice = st.selectbox("Select Machine", ["+ New Machine"] + existing_machines)
+    m_id = st.text_input("Machine ID Entry", value="" if m_choice == "+ New Machine" else m_choice)
+
+    # Multi-Coolant Logic
+    multi_coolant = st.toggle("Machine-specific coolant?")
+    active_coolant = st.selectbox("Machine Coolant", ["+ New"] + all_coolants) if multi_coolant else shop_cool_name
+    if multi_coolant and active_coolant == "+ New":
+        active_coolant = st.text_input("New Spec Coolant Name")
+
+    # Recall History
+    last_vol, last_ri = 100.0, 1.0
+    if m_choice != "+ New Machine":
+        c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY id DESC LIMIT 1", (m_id, customer))
+        last_rec = c.fetchone()
+        if last_rec: last_vol, last_ri = last_rec[0], last_rec[1]
+
     c1, c2 = st.columns(2)
-    with c1:
-        brix = st.number_input("Brix Reading", min_value=0.0, format="%.1f")
-    with c2:
-        ph = st.number_input("pH Reading", min_value=0.0, format="%.1f")
+    vol = c1.number_input("Sump Volume", value=last_vol)
+    ri = c2.number_input("RI Factor", value=last_ri)
     
-    actual_conc = round(brix * 1.0, 2)
-    
+    c3, c4 = st.columns(2)
+    brix = c3.number_input("Brix Reading", min_value=0.0, format="%.1f")
+    ph = c4.number_input("pH Reading", min_value=0.0, format="%.1f")
+
+    actual_conc = round(brix * ri, 2)
     if brix > 0:
         st.markdown("---")
         m1, m2 = st.columns(2)
-        m1.metric("Conc", f"{actual_conc}%")
-        m2.metric("pH", ph)
-        
+        m1.metric("Conc", f"{actual_conc}%", delta=round(actual_conc - t_conc, 2))
+        m2.metric("pH", ph, delta=round(ph - t_ph, 2))
         if actual_conc < t_conc:
-            st.warning(f"ACTION: Add Concentrate")
+            st.warning(f"💡 Add **{round(((t_conc - actual_conc)/100)*vol, 2)} Gal** Concentrate")
         if 0 < ph < t_ph:
-            st.error(f"ACTION: Add pH Boost")
+            st.error(f"🚨 Add **{round((vol/100)*16, 1)} oz** pH Boost 95")
 
 with col_chart:
-    st.markdown(f"### <span class='green-text'>Trend Line</span>", unsafe_allow_html=True)
-    # Altair chart would go here
+    st.markdown(f"### <span class='green-text'>Historical Trend</span>", unsafe_allow_html=True)
+    if m_id and customer:
+        hist = pd.read_sql_query(f"SELECT date, conc FROM logs WHERE customer='{customer}' AND m_id='{m_id}' ORDER BY date ASC", conn)
+        if not hist.empty:
+            hist['date'] = pd.to_datetime(hist['date'])
+            chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
+            st.altair_chart(chart, use_container_width=True)
 
-# --- 3. OBSERVATIONS ---
+# --- 6. OBSERVATIONS & NOTES ---
 st.markdown("---")
-notes = st.text_area("Observations", value=st.session_state.master_notes)
+st.text_area("Observations", value=st.session_state.master_notes, key="notes_widget", on_change=update_master_from_box, height=120)
 
-btns = st.columns(5)
-if btns[0].button("pH Boost"): st.session_state.master_notes += "Added pH Boost. "; st.rerun()
-if btns[1].button("Fungicide"): st.session_state.master_notes += "Added Fungicide. "; st.rerun()
-if btns[2].button("Defoamer"): st.session_state.master_notes += "Added Defoamer. "; st.rerun()
-if btns[3].button("Biocide"): st.session_state.master_notes += "Added Biocide. "; st.rerun()
-if btns[4].button("DCR"): st.session_state.master_notes += "Recommend DCR. "; st.rerun()
+btns = st.columns(6)
+if btns[0].button("pH Boost"): add_quick_note("Added pH Boost")
+if btns[1].button("Fungicide"): add_quick_note("Added Fungicide")
+if btns[2].button("Defoamer"): add_quick_note("Added Defoamer")
+if btns[3].button("Biocide"): add_quick_note("Added Biocide")
+if btns[4].button("DCR"): add_quick_note("Recommend DCR")
+if btns[5].button("🗑️ CLEAR"): clear_notes()
 
-if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
-    st.success("Entry Recorded in QualiServ")
+if st.button("💾 SAVE MACHINE LOG", use_container_width=True, type="primary"):
+    if customer and m_id:
+        c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(log_date)))
+        conn.commit()
+        st.success(f"Log Saved Successfully.")
+        clear_notes(); st.rerun()
+
+# --- 7. RECENT LOGS ---
+st.markdown("### <span class='green-text'>Recent Entries</span>", unsafe_allow_html=True)
+if customer:
+    rec_df = pd.read_sql_query(f"SELECT date, m_id, conc, ph FROM logs WHERE customer='{customer}' ORDER BY id DESC LIMIT 5", conn)
+    st.table(rec_df)
