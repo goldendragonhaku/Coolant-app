@@ -14,7 +14,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="QualiServ Pro v65", layout="wide")
+st.set_page_config(page_title="QualiServ Pro v66", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
 
@@ -57,7 +57,7 @@ if "shop_product_input" not in st.session_state: st.session_state.shop_product_i
 if "vol_input" not in st.session_state: st.session_state.vol_input = 100.0
 if "ri_input" not in st.session_state: st.session_state.ri_input = 1.0
 
-# --- 3. SIDEBAR ---
+# --- 3. SIDEBAR (Restored Export Excel) ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
@@ -65,12 +65,25 @@ with st.sidebar:
     shop_choice = st.selectbox("Select Shop", ["+ New Shop"] + shops, key="shop_choice_widget", on_change=recall_shop_specs)
     customer = st.text_input("Active Shop Name", value="" if shop_choice == "+ New Shop" else shop_choice)
     
+    # Base Product Field
     c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
     coolants = [r[0] for r in c.fetchall() if r[0]]
     cool_choice = st.selectbox("Base Shop Product", ["+ New"] + coolants)
     shop_coolant = st.text_input("Product Name", key="shop_product_input")
     
     st.markdown("---")
+    
+    # RESTORED: Export Shop Excel
+    if customer:
+        st.subheader("📊 Reports")
+        df_exp = pd.read_sql_query(f"SELECT date, m_id, coolant, conc, ph, notes FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
+        if not df_exp.empty:
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+                df_exp.to_excel(writer, index=False, sheet_name='QualiServ')
+            st.download_button("📥 Export Shop Excel", out.getvalue(), f"{customer}_Report.xlsx")
+
+    # Data Management Tools
     with st.expander("💾 DATA MANAGEMENT"):
         with open(DB_NAME, 'rb') as f:
             st.download_button("Download DB", f, file_name="qualiserv_backup.db")
@@ -83,17 +96,8 @@ with st.sidebar:
             pd.read_excel(up_xl).to_sql('logs', conn, if_exists='append', index=False)
             st.rerun()
 
-    if customer:
-        st.subheader("📊 Reports")
-        df_exp = pd.read_sql_query(f"SELECT * FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
-        if not df_exp.empty:
-            out = io.BytesIO()
-            with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-                df_exp.to_excel(writer, index=False)
-            st.download_button("📥 Export Shop Excel", out.getvalue(), f"{customer}_Report.xlsx")
-
     t_conc = st.number_input("Target %", value=8.0)
-    t_ph = st.number_input("Min pH", value=8.8)
+    t_ph = st.number_input("Min pH Target", value=8.8)
 
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
 
@@ -112,14 +116,14 @@ with col_in:
     m_cool_toggle = st.toggle("Machine-specific product?")
     active_coolant = st.text_input("Product Override", value=shop_coolant) if m_cool_toggle else shop_coolant
 
+    # Auto-Population Fields with "Enter" Reminders
     c1, c2 = st.columns(2)
-    # Added "Enter to apply" hints to labels
-    vol = c1.number_input("Sump Volume (Gal) ↵", key="vol_input", help="Press Enter to update analysis")
-    ri = c2.number_input("RI Factor ↵", key="ri_input", help="Press Enter to update analysis")
+    vol = c1.number_input("Sump Volume (Gal) ↵", key="vol_input")
+    ri = c2.number_input("RI Factor ↵", key="ri_input")
     
     c3, c4 = st.columns(2)
-    brix = c3.number_input("Brix Reading ↵", min_value=0.0, help="Press Enter to update analysis")
-    ph = c4.number_input("pH Reading ↵", min_value=0.0, help="Press Enter to update analysis")
+    brix = c3.number_input("Brix Reading ↵", min_value=0.0)
+    ph = c4.number_input("pH Reading ↵", min_value=0.0)
 
     actual_conc = round(brix * ri, 2)
     if brix > 0:
@@ -137,10 +141,10 @@ with col_chart:
             chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
             st.altair_chart(chart, use_container_width=True)
 
-# --- 5. OBSERVATIONS (HINTS RESTORED) ---
+# --- 5. OBSERVATIONS (with Cmd+Enter reminder) ---
 st.markdown("---")
 st.markdown(f"### <span class='green-text'>Observations</span> <span class='hint-text'>(Press Cmd+Enter to confirm)</span>", unsafe_allow_html=True)
-user_notes = st.text_area("Field Notes", height=120, label_visibility="collapsed", placeholder="Type notes here... Press Cmd+Enter to finalize before saving.")
+user_notes = st.text_area("Field Notes", height=120, label_visibility="collapsed", placeholder="Ex: Added 2 gallons, adjusted skim speed...")
 
 if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
     if customer and m_id:
