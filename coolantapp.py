@@ -26,46 +26,79 @@ st.markdown(f"""
     input, div[data-baseweb="select"], div[data-baseweb="input"], textarea {{ background-color: #ffffff !important; color: #000000 !important; border-radius: 5px !important; }}
     div.stButton > button {{ background-color: {QC_GREEN} !important; color: {QC_DARK_BLUE} !important; font-weight: bold !important; border: none !important; width: 100% !important; }}
     [data-testid="stMetricValue"] {{ color: {QC_GREEN} !important; font-size: 32px !important; }}
+    [data-testid="stTable"] {{ background-color: white !important; color: black !important; }}
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. THE NOTES ENGINE ---
-if "notes_content" not in st.session_state:
-    st.session_state.notes_content = ""
+# --- 2. THE NOTES ENGINE (FIXED) ---
+if "notes_buffer" not in st.session_state:
+    st.session_state.notes_buffer = ""
 
-def add_note_fragment(fragment):
-    # Capture what is currently in the box before adding the fragment
-    if "temp_notes_box" in st.session_state:
-        st.session_state.notes_content = st.session_state.temp_notes_box
-    st.session_state.notes_content += f"{fragment}. "
+def add_quick_note(text):
+    # Pull current typed text from the widget key before it disappears on rerun
+    if "notes_widget" in st.session_state:
+        st.session_state.notes_buffer = st.session_state.notes_widget
+    st.session_state.notes_buffer += f"{text}. "
     st.rerun()
 
-# --- 3. SIDEBAR & INPUTS ---
+# --- 3. SIDEBAR: SHOP & REPORTS ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
     shops = [r[0] for r in c.fetchall() if r[0]]
-    shop_choice = st.selectbox("Shop", ["+ New"] + shops)
-    customer = st.text_input("Customer", value="" if shop_choice == "+ New" else shop_choice)
+    shop_choice = st.selectbox("Shop Selection", ["+ New Shop"] + shops)
+    customer = st.text_input("Active Customer", value="" if shop_choice == "+ New Shop" else shop_choice)
+    
+    st.markdown("---")
+    c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
+    coolants = [r[0] for r in c.fetchall() if r[0]]
+    cool_choice = st.selectbox("Base Shop Product", ["+ New"] + coolants)
+    shop_coolant = st.text_input("Product Name", value="" if cool_choice == "+ New" else cool_choice)
     
     t_conc = st.number_input("Target %", value=8.0)
     t_ph = st.number_input("Min pH", value=8.8)
 
+    if customer:
+        st.markdown("---")
+        df_exp = pd.read_sql_query(f"SELECT date, m_id, conc, ph, notes FROM logs WHERE customer='{customer}'", conn)
+        if not df_exp.empty:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_exp.to_excel(writer, index=False, sheet_name='Report')
+            st.download_button("📥 Export Excel", output.getvalue(), f"{customer}_Report.xlsx")
+
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
+
+# --- 4. MAIN INTERFACE ---
 col_in, col_gr = st.columns([1, 1], gap="large")
 
 with col_in:
-    st.markdown("### <span class='green-text'>Machine Data</span>", unsafe_allow_html=True)
-    m_id = st.text_input("Machine ID")
+    st.markdown("### <span class='green-text'>Machine Entry</span>", unsafe_allow_html=True)
     
-    # Simple direct logic for brix/ph
+    # Machine Selection & Recall
+    c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
+    machines = [r[0] for r in c.fetchall() if r[0]]
+    m_choice = st.selectbox("Select Machine", ["+ New Machine"] + machines)
+    m_id = st.text_input("Confirm ID", value="" if m_choice == "+ New Machine" else m_choice)
+
+    # Multi-Coolant Toggle
+    m_cool_toggle = st.toggle("Machine-specific product?")
+    active_coolant = st.text_input("Specific Product", value=shop_coolant) if m_cool_toggle else shop_coolant
+
+    # Auto-Recall
+    last_vol, last_ri = 100.0, 1.0
+    if m_choice != "+ New Machine":
+        c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY id DESC LIMIT 1", (m_id, customer))
+        res = c.fetchone()
+        if res: last_vol, last_ri = res[0], res[1]
+
     c1, c2 = st.columns(2)
-    vol = c1.number_input("Sump Volume", value=100.0)
-    ri = c2.number_input("RI Factor", value=1.0)
+    vol = c1.number_input("Sump Volume", value=last_vol)
+    ri = c2.number_input("RI Factor", value=last_ri)
     
     c3, c4 = st.columns(2)
-    brix = c3.number_input("Brix", min_value=0.0)
-    ph = c4.number_input("pH", min_value=0.0)
+    brix = c3.number_input("Brix Reading", min_value=0.0)
+    ph = c4.number_input("pH Reading", min_value=0.0)
     
     actual_conc = round(brix * ri, 2)
     if brix > 0:
@@ -74,32 +107,36 @@ with col_in:
         m1.metric("Conc", f"{actual_conc}%", delta=round(actual_conc - t_conc, 2))
         m2.metric("pH", ph, delta=round(ph - t_ph, 2))
 
-# --- 4. THE NOTES SECTION (FIXED) ---
+with col_gr:
+    st.markdown("### <span class='green-text'>Trend Analytics</span>", unsafe_allow_html=True)
+    if m_id and customer:
+        hist = pd.read_sql_query(f"SELECT date, conc FROM logs WHERE customer='{customer}' AND m_id='{m_id}'", conn)
+        if not hist.empty:
+            hist['date'] = pd.to_datetime(hist['date'])
+            chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
+            st.altair_chart(chart, use_container_width=True)
+
+# --- 5. OBSERVATIONS (FIXED SYNC) ---
 st.markdown("---")
-st.markdown("### <span class='green-text'>Observations</span>", unsafe_allow_html=True)
+st.text_area("Notes", value=st.session_state.notes_buffer, key="notes_widget", height=120)
 
-# We use 'value' to show the state, but 'key' allows us to capture what's being typed
-current_notes = st.text_area("Notes", value=st.session_state.notes_content, key="temp_notes_box", height=150)
-
-# Quick Add Buttons
-q1, q2, q3, q4, q5, q6 = st.columns(6)
-if q1.button("pH Boost"): add_note_fragment("Added pH Boost")
-if q2.button("Fungicide"): add_note_fragment("Added Fungicide")
-if q3.button("Defoamer"): add_note_fragment("Added Defoamer")
-if q4.button("Biocide"): add_note_fragment("Added Biocide")
-if q5.button("DCR"): add_note_fragment("Recommend DCR")
-if q6.button("🗑️"): 
-    st.session_state.notes_content = ""
+btns = st.columns(6)
+if btns[0].button("pH Boost"): add_quick_note("Added pH Boost")
+if btns[1].button("Fungicide"): add_quick_note("Added Fungicide")
+if btns[2].button("Defoamer"): add_quick_note("Added Defoamer")
+if btns[3].button("Biocide"): add_quick_note("Added Biocide")
+if btns[4].button("DCR"): add_quick_note("Recommend DCR")
+if btns[5].button("🗑️"): 
+    st.session_state.notes_buffer = ""
     st.rerun()
 
-# --- 5. SAVE ---
 if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
-    # Ensure we capture the latest typed text even if no button was clicked
-    final_notes = st.session_state.temp_notes_box
+    # Ensure typed text is captured
+    final_notes = st.session_state.notes_widget if "notes_widget" in st.session_state else st.session_state.notes_buffer
     if customer and m_id:
-        c.execute("INSERT INTO logs (customer, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?)",
-                  (customer, m_id, vol, ri, brix, actual_conc, ph, final_notes, str(date.today())))
+        c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, final_notes, str(date.today())))
         conn.commit()
-        st.session_state.notes_content = "" # Reset
-        st.success("Successfully Logged.")
+        st.session_state.notes_buffer = ""
+        st.success("Log Saved.")
         st.rerun()
