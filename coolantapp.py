@@ -14,7 +14,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="QualiServ Pro v62", layout="wide")
+st.set_page_config(page_title="QualiServ Pro v64", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
 
@@ -30,20 +30,69 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. SIDEBAR ---
+# --- 2. RECALL LOGIC ---
+
+def recall_shop_specs():
+    """Triggered when Shop changes: Recalls Product, Target Conc, and Target pH"""
+    target_shop = st.session_state.shop_choice_widget
+    if target_shop != "+ New Shop":
+        # We query the last log for this shop to get the product used
+        c.execute("SELECT coolant FROM logs WHERE customer=? ORDER BY date DESC LIMIT 1", (target_shop,))
+        res = c.fetchone()
+        if res:
+            st.session_state.shop_product_input = res[0]
+            # You can also add logic here to recall specific targets if you save them elsewhere
+    else:
+        st.session_state.shop_product_input = ""
+
+def recall_machine_specs():
+    """Triggered when Machine changes: Recalls Vol and RI"""
+    target_m = st.session_state.m_choice_widget
+    if target_m != "+ New Machine":
+        c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY date DESC LIMIT 1", (target_m, customer))
+        result = c.fetchone()
+        if result:
+            st.session_state.vol_input = result[0]
+            st.session_state.ri_input = result[1]
+    else:
+        st.session_state.vol_input = 100.0
+        st.session_state.ri_input = 1.0
+
+# Initialize session states
+if "shop_product_input" not in st.session_state: st.session_state.shop_product_input = ""
+if "vol_input" not in st.session_state: st.session_state.vol_input = 100.0
+if "ri_input" not in st.session_state: st.session_state.ri_input = 1.0
+
+# --- 3. SIDEBAR ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
+    
+    # Shop Selector with Recall Callback
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
     shops = [r[0] for r in c.fetchall() if r[0]]
-    shop_choice = st.selectbox("Select Shop", ["+ New Shop"] + shops)
+    shop_choice = st.selectbox("Select Shop", ["+ New Shop"] + shops, key="shop_choice_widget", on_change=recall_shop_specs)
     customer = st.text_input("Active Shop Name", value="" if shop_choice == "+ New Shop" else shop_choice)
     
-    st.markdown("---")
+    # Product Field tied to Shop Recall
     c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
     coolants = [r[0] for r in c.fetchall() if r[0]]
-    cool_choice = st.selectbox("Base Shop Product", ["+ New"] + coolants)
-    shop_coolant = st.text_input("Product Name", value="" if cool_choice == "+ New" else cool_choice)
+    cool_choice = st.selectbox("Shop Base Product", ["+ New"] + coolants)
+    shop_coolant = st.text_input("Product Name", key="shop_product_input")
     
+    st.markdown("---")
+    
+    with st.expander("💾 DATA MANAGEMENT"):
+        with open(DB_NAME, 'rb') as f:
+            st.download_button("Download DB (.db)", f, file_name="qualiserv_backup.db")
+        up_db = st.file_uploader("Upload DB (.db)", type="db")
+        if up_db:
+            with open(DB_NAME, "wb") as f: f.write(up_db.getbuffer())
+            st.rerun()
+        up_xl = st.file_uploader("Import Excel", type="xlsx")
+        if up_xl:
+            pd.read_excel(up_xl).to_sql('logs', conn, if_exists='append', index=False)
+            st.rerun()
+
     if customer:
         st.subheader("📊 Reports")
         df_exp = pd.read_sql_query(f"SELECT * FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
@@ -58,43 +107,25 @@ with st.sidebar:
 
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
 
-# --- 3. THE RECALL ENGINE ---
-# We use this function to update the internal state keys for the number inputs
-def recall_machine_specs():
-    target_m = st.session_state.m_choice_widget
-    if target_m != "+ New Machine":
-        c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY date DESC LIMIT 1", (target_m, customer))
-        result = c.fetchone()
-        if result:
-            st.session_state.vol_input = result[0]
-            st.session_state.ri_input = result[1]
-    else:
-        st.session_state.vol_input = 100.0
-        st.session_state.ri_input = 1.0
-
-# Initialize state keys if they don't exist
-if "vol_input" not in st.session_state: st.session_state.vol_input = 100.0
-if "ri_input" not in st.session_state: st.session_state.ri_input = 1.0
-
 # --- 4. MAIN DASHBOARD ---
 col_in, col_chart = st.columns([1, 1], gap="large")
 
 with col_in:
-    st.markdown("### <span class='green-text'>Machine Entry</span>", unsafe_allow_html=True)
+    st.markdown("### <span class='green-text'>Machine Data Entry</span>", unsafe_allow_html=True)
     service_date = st.date_input("Service Date", value=date.today())
     
-    # Machine Selector with Callback
+    # Machine Selector with Recall Callback
     c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
     machines = [r[0] for r in c.fetchall() if r[0]]
     m_choice = st.selectbox("Select Machine", ["+ New Machine"] + machines, key="m_choice_widget", on_change=recall_machine_specs)
-    m_id = st.text_input("Confirm ID", value="" if m_choice == "+ New Machine" else m_choice)
+    m_id = st.text_input("Machine ID", value="" if m_choice == "+ New Machine" else m_choice)
 
     m_cool_toggle = st.toggle("Machine-specific product?")
     active_coolant = st.text_input("Product Override", value=shop_coolant) if m_cool_toggle else shop_coolant
 
-    # Number inputs tied to the session state keys we update in the recall function
+    # Auto-Populating Fields
     c1, c2 = st.columns(2)
-    vol = c1.number_input("Sump Vol (Gal)", key="vol_input")
+    vol = c1.number_input("Sump Volume", key="vol_input")
     ri = c2.number_input("RI Factor", key="ri_input")
     
     c3, c4 = st.columns(2)
@@ -119,13 +150,13 @@ with col_chart:
 
 # --- 5. OBSERVATIONS ---
 st.markdown("---")
-st.markdown(f"### <span class='green-text'>Observations</span>", unsafe_allow_html=True)
+st.markdown("### <span class='green-text'>Observations</span>", unsafe_allow_html=True)
 user_notes = st.text_area("Field Notes", height=120, label_visibility="collapsed")
 
-if st.button("💾 SAVE LOG", use_container_width=True):
+if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
     if customer and m_id:
         c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
                   (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, user_notes, str(service_date)))
         conn.commit()
-        st.success(f"Saved {m_id}!")
+        st.success(f"Entry Saved Successfully.")
         st.rerun()
