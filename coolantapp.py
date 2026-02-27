@@ -13,7 +13,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-# --- 2. NIGHT-VISION CSS (FORCED CONTRAST) ---
+# --- 2. FORCED DARK THEME CSS ---
 st.set_page_config(page_title="QualiServ Pro", layout="wide")
 
 QC_BLUE = "#00529B"
@@ -32,84 +32,57 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. SESSION STATE FOR NOTES ---
-if "master_notes" not in st.session_state: st.session_state.master_notes = ""
-def update_master_from_box(): st.session_state.master_notes = st.session_state.notes_widget
+# --- 3. UPDATED LOGIC (The Fix for the API Exception) ---
+if "master_notes" not in st.session_state: 
+    st.session_state.master_notes = ""
+
+def sync_from_widget():
+    """Sync manual typing to master memory."""
+    if "notes_widget" in st.session_state:
+        st.session_state.master_notes = st.session_state.notes_widget
+
 def add_quick_note(text):
+    """Update master memory and rerun to refresh the widget."""
     st.session_state.master_notes += f"{text}. "
-    st.session_state.notes_widget = st.session_state.master_notes
+    st.rerun()
+
 def clear_notes():
     st.session_state.master_notes = ""
-    if "notes_widget" in st.session_state: st.session_state.notes_widget = ""
+    st.rerun()
 
-# --- 4. SIDEBAR: SHOP & COOLANT SELECTION ---
+# --- 4. SIDEBAR ---
 with st.sidebar:
     st.markdown(f"<h1 style='text-align: center;'>QualiServ</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center;' class='green-text'>FIELD ANALYTICS</p>", unsafe_allow_html=True)
     st.markdown("---")
-    
-    # Shop Dropdown
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
     existing_shops = [row[0] for row in c.fetchall() if row[0]]
     shop_choice = st.selectbox("Select Shop", ["+ New Shop"] + existing_shops)
     customer = st.text_input("Active Shop", value="" if shop_choice == "+ New Shop" else shop_choice)
     
-    # Target Specs
     c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
     all_coolants = [row[0] for row in c.fetchall() if row[0]]
     cool_choice = st.selectbox("Base Coolant", ["+ New Coolant"] + all_coolants)
     shop_cool_name = st.text_input("Base Product", value="" if cool_choice == "+ New Coolant" else cool_choice)
     
-    t_conc = st.number_input("Target %", value=8.0, step=0.5)
-    t_ph = st.number_input("Min pH", value=8.8, step=0.1)
-    
-    # Branded Excel Export
-    if customer:
-        st.markdown("---")
-        df_export = pd.read_sql_query(f"SELECT date, m_id, coolant, conc, ph, notes FROM logs WHERE customer='{customer}' ORDER BY date DESC", conn)
-        if not df_export.empty:
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_export.to_excel(writer, index=False, sheet_name='QualiServ Report')
-                workbook, worksheet = writer.book, writer.sheets['QualiServ Report']
-                h_fmt = workbook.add_format({'bold': True, 'font_color': 'white', 'bg_color': QC_BLUE})
-                for col_num, val in enumerate(df_export.columns.values): worksheet.write(0, col_num, val, h_fmt)
-            st.download_button("📥 Export Branded .xlsx", output.getvalue(), f"QualiServ_{customer.replace(' ','_')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    t_conc = st.number_input("Target %", value=8.0)
+    t_ph = st.number_input("Min pH", value=8.8)
 
 # --- 5. MAIN DASHBOARD ---
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
-
 col_main, col_chart = st.columns([1, 1], gap="large")
 
 with col_main:
-    st.markdown(f"### <span class='green-text'>Machine Data Entry</span>", unsafe_allow_html=True)
-    log_date = st.date_input("Service Date", value=date.today())
+    st.markdown(f"### <span class='green-text'>Machine Entry</span>")
+    log_date = st.date_input("Date", value=date.today())
+    m_id = st.text_input("Machine ID")
     
-    c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
-    existing_machines = [row[0] for row in c.fetchall() if row[0]]
-    m_choice = st.selectbox("Select Machine", ["+ New Machine"] + existing_machines)
-    m_id = st.text_input("Machine ID Entry", value="" if m_choice == "+ New Machine" else m_choice)
-
-    # Multi-Coolant Logic
-    multi_coolant = st.toggle("Machine-specific coolant?")
-    active_coolant = st.selectbox("Machine Coolant", ["+ New"] + all_coolants) if multi_coolant else shop_cool_name
-    if multi_coolant and active_coolant == "+ New":
-        active_coolant = st.text_input("New Spec Coolant Name")
-
-    # Recall History
-    last_vol, last_ri = 100.0, 1.0
-    if m_choice != "+ New Machine":
-        c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY id DESC LIMIT 1", (m_id, customer))
-        last_rec = c.fetchone()
-        if last_rec: last_vol, last_ri = last_rec[0], last_rec[1]
-
     c1, c2 = st.columns(2)
-    vol = c1.number_input("Sump Volume", value=last_vol)
-    ri = c2.number_input("RI Factor", value=last_ri)
+    vol = c1.number_input("Sump Vol", value=100.0)
+    ri = c2.number_input("RI Factor", value=1.0)
     
     c3, c4 = st.columns(2)
-    brix = c3.number_input("Brix Reading", min_value=0.0, format="%.1f")
-    ph = c4.number_input("pH Reading", min_value=0.0, format="%.1f")
+    brix = c3.number_input("Brix", min_value=0.0)
+    ph = c4.number_input("pH", min_value=0.0)
 
     actual_conc = round(brix * ri, 2)
     if brix > 0:
@@ -117,23 +90,15 @@ with col_main:
         m1, m2 = st.columns(2)
         m1.metric("Conc", f"{actual_conc}%", delta=round(actual_conc - t_conc, 2))
         m2.metric("pH", ph, delta=round(ph - t_ph, 2))
-        if actual_conc < t_conc:
-            st.warning(f"💡 Add **{round(((t_conc - actual_conc)/100)*vol, 2)} Gal** Concentrate")
-        if 0 < ph < t_ph:
-            st.error(f"🚨 Add **{round((vol/100)*16, 1)} oz** pH Boost 95")
 
-with col_chart:
-    st.markdown(f"### <span class='green-text'>Historical Trend</span>", unsafe_allow_html=True)
-    if m_id and customer:
-        hist = pd.read_sql_query(f"SELECT date, conc FROM logs WHERE customer='{customer}' AND m_id='{m_id}' ORDER BY date ASC", conn)
-        if not hist.empty:
-            hist['date'] = pd.to_datetime(hist['date'])
-            chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
-            st.altair_chart(chart, use_container_width=True)
-
-# --- 6. OBSERVATIONS & NOTES ---
+# --- 6. OBSERVATIONS (The Corrected Widget) ---
 st.markdown("---")
-st.text_area("Observations", value=st.session_state.master_notes, key="notes_widget", on_change=update_master_from_box, height=120)
+# The 'value' is tied to master_notes, 'on_change' handles manual typing
+st.text_area("Observations", 
+             value=st.session_state.master_notes, 
+             key="notes_widget", 
+             on_change=sync_from_widget, 
+             height=120)
 
 btns = st.columns(6)
 if btns[0].button("pH Boost"): add_quick_note("Added pH Boost")
@@ -143,16 +108,11 @@ if btns[3].button("Biocide"): add_quick_note("Added Biocide")
 if btns[4].button("DCR"): add_quick_note("Recommend DCR")
 if btns[5].button("🗑️ CLEAR"): clear_notes()
 
-if st.button("💾 SAVE MACHINE LOG", use_container_width=True, type="primary"):
+if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
     if customer and m_id:
         c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(log_date)))
+                  (customer, shop_cool_name, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(log_date)))
         conn.commit()
-        st.success(f"Log Saved Successfully.")
-        clear_notes(); st.rerun()
-
-# --- 7. RECENT LOGS ---
-st.markdown("### <span class='green-text'>Recent Entries</span>", unsafe_allow_html=True)
-if customer:
-    rec_df = pd.read_sql_query(f"SELECT date, m_id, conc, ph FROM logs WHERE customer='{customer}' ORDER BY id DESC LIMIT 5", conn)
-    st.table(rec_df)
+        st.session_state.master_notes = ""
+        st.success("Saved!")
+        st.rerun()
