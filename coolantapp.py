@@ -5,7 +5,7 @@ import io
 import altair as alt
 from datetime import datetime, date
 
-# --- 1. DATABASE & THEME ---
+# --- 1. DATABASE SETUP ---
 conn = sqlite3.connect('qualiserv_pro.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS logs 
@@ -13,6 +13,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
+# --- 2. THEMED CSS (FORCED CONTRAST) ---
 st.set_page_config(page_title="QualiServ Pro", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
@@ -29,61 +30,70 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. THE NOTES ENGINE (THE FIX) ---
+# --- 3. SESSION STATE LOGIC ---
 if "master_notes" not in st.session_state:
     st.session_state.master_notes = ""
 
-def handle_quick_note(text_to_add):
-    # 1. Capture what is CURRENTLY typed in the box before it reruns
+def sync_notes():
+    """Captures typed text into the master state."""
     if "notes_widget" in st.session_state:
         st.session_state.master_notes = st.session_state.notes_widget
-    
-    # 2. Append the new note
-    st.session_state.master_notes += f"{text_to_add}. "
-    
-    # 3. MANUALLY update the widget's internal state so it shows up instantly
-    st.session_state.notes_widget = st.session_state.master_notes
 
-def clear_notes():
-    st.session_state.master_notes = ""
-    st.session_state.notes_widget = ""
+def add_quick_note(text):
+    """Updates state and reruns. Rerun avoids the StreamlitAPIException."""
+    sync_notes()
+    st.session_state.master_notes += f"{text}. "
+    st.rerun()
 
-# --- 3. SIDEBAR (Full Logic Restored) ---
+# --- 4. SIDEBAR: SHOP & EXCEL ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
     shops = [r[0] for r in c.fetchall() if r[0]]
-    shop_choice = st.selectbox("Shop", ["+ New Shop"] + shops)
-    customer = st.text_input("Active Customer", value="" if shop_choice == "+ New Shop" else shop_choice)
+    shop_choice = st.selectbox("Shop Selection", ["+ New Shop"] + shops)
+    customer = st.text_input("Active Shop", value="" if shop_choice == "+ New Shop" else shop_choice)
     
     st.markdown("---")
     c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
     coolants = [r[0] for r in c.fetchall() if r[0]]
-    cool_choice = st.selectbox("Shop Product", ["+ New"] + coolants)
+    cool_choice = st.selectbox("Shop Base Product", ["+ New"] + coolants)
     shop_coolant = st.text_input("Product Name", value="" if cool_choice == "+ New" else cool_choice)
     
     t_conc = st.number_input("Target %", value=8.0)
-    t_ph = st.number_input("Min pH", value=8.8)
+    t_ph = st.number_input("Min pH Target", value=8.8)
+
+    if customer:
+        st.markdown("---")
+        df_exp = pd.read_sql_query(f"SELECT * FROM logs WHERE customer='{customer}'", conn)
+        if not df_exp.empty:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_exp.to_excel(writer, index=False, sheet_name='QualiServ')
+            st.download_button("📥 Export Excel Report", output.getvalue(), f"{customer}_Report.xlsx")
 
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
 
-# --- 4. DATA ENTRY & RECALL ---
-col_in, col_gr = st.columns([1, 1], gap="large")
+# --- 5. MAIN INTERFACE ---
+col_in, col_chart = st.columns([1, 1], gap="large")
 
 with col_in:
     st.markdown("### <span class='green-text'>Machine Data</span>", unsafe_allow_html=True)
     
     c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
     machines = [r[0] for r in c.fetchall() if r[0]]
-    m_choice = st.selectbox("Machine ID", ["+ New Machine"] + machines)
+    m_choice = st.selectbox("Select Machine", ["+ New Machine"] + machines)
     m_id = st.text_input("Confirm ID", value="" if m_choice == "+ New Machine" else m_choice)
 
-    # Auto-Recall History
+    # Multi-Coolant Override
+    m_cool_toggle = st.toggle("Machine-specific product?")
+    active_coolant = st.text_input("Specific Product", value=shop_coolant) if m_cool_toggle else shop_coolant
+
+    # Auto-Recall for Sump/RI
     last_vol, last_ri = 100.0, 1.0
     if m_choice != "+ New Machine":
         c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY id DESC LIMIT 1", (m_id, customer))
-        res = c.fetchone()
-        if res: last_vol, last_ri = res[0], res[1]
+        recall = c.fetchone()
+        if recall: last_vol, last_ri = recall[0], recall[1]
 
     c1, c2 = st.columns(2)
     vol = c1.number_input("Sump Volume", value=last_vol)
@@ -92,15 +102,19 @@ with col_in:
     c3, c4 = st.columns(2)
     brix = c3.number_input("Brix Reading", min_value=0.0)
     ph = c4.number_input("pH Reading", min_value=0.0)
-    
+
     actual_conc = round(brix * ri, 2)
     if brix > 0:
         st.markdown("---")
         m1, m2 = st.columns(2)
         m1.metric("Conc", f"{actual_conc}%", delta=round(actual_conc - t_conc, 2))
         m2.metric("pH", ph, delta=round(ph - t_ph, 2))
+        if actual_conc < t_conc:
+            st.warning(f"💡 Add {round(((t_conc - actual_conc)/100)*vol, 2)} Gal Concentrate")
+        if 0 < ph < t_ph:
+            st.error(f"🚨 Add {round((vol/100)*16, 1)} oz pH Boost 95")
 
-with col_gr:
+with col_chart:
     st.markdown("### <span class='green-text'>Trend Analytics</span>", unsafe_allow_html=True)
     if m_id and customer:
         hist = pd.read_sql_query(f"SELECT date, conc FROM logs WHERE customer='{customer}' AND m_id='{m_id}'", conn)
@@ -109,29 +123,26 @@ with col_gr:
             chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
             st.altair_chart(chart, use_container_width=True)
 
-# --- 5. OBSERVATIONS (THE INSTANT SYNC BOX) ---
+# --- 6. OBSERVATIONS (FIXED SYNC) ---
 st.markdown("---")
-st.markdown("### <span class='green-text'>Field Observations</span>", unsafe_allow_html=True)
+st.text_area("Observations", value=st.session_state.master_notes, key="notes_widget", on_change=sync_notes, height=120)
 
-# Using 'key' to allow handle_quick_note to push data directly into the widget
-st.text_area("Observations Log", value=st.session_state.master_notes, key="notes_widget", height=150)
+btns = st.columns(6)
+if btns[0].button("pH Boost"): add_quick_note("Added pH Boost")
+if btns[1].button("Fungicide"): add_quick_note("Added Fungicide")
+if btns[2].button("Defoamer"): add_quick_note("Added Defoamer")
+if btns[3].button("Biocide"): add_quick_note("Added Biocide")
+if btns[4].button("DCR"): add_quick_note("Recommend DCR")
+if btns[5].button("🗑️"): 
+    st.session_state.master_notes = ""
+    st.rerun()
 
-q_cols = st.columns(6)
-if q_cols[0].button("pH Boost"): handle_quick_note("Added pH Boost")
-if q_cols[1].button("Fungicide"): handle_quick_note("Added Fungicide")
-if q_cols[2].button("Defoamer"): handle_quick_note("Added Defoamer")
-if q_cols[3].button("Biocide"): handle_quick_note("Added Biocide")
-if q_cols[4].button("DCR"): handle_quick_note("Recommend DCR")
-if q_cols[5].button("🗑️ CLEAR"): clear_notes()
-
-# --- 6. SAVE ---
 if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
-    # Final capture of whatever is in the box
-    final_notes = st.session_state.notes_widget if "notes_widget" in st.session_state else st.session_state.master_notes
+    sync_notes() # Final grab of typed text
     if customer and m_id:
         c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                  (customer, shop_coolant, m_id, vol, ri, brix, actual_conc, ph, final_notes, str(date.today())))
+                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(date.today())))
         conn.commit()
-        clear_notes()
-        st.success("Log Entry Recorded.")
+        st.session_state.master_notes = ""
+        st.success("Entry Saved.")
         st.rerun()
