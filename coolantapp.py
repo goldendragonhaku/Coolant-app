@@ -14,7 +14,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="QualiServ Pro v58", layout="wide")
+st.set_page_config(page_title="QualiServ Pro v59", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
 
@@ -30,19 +30,7 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. NOTES ENGINE ---
-if "master_notes" not in st.session_state: st.session_state.master_notes = ""
-
-def sync_notes():
-    if "notes_widget" in st.session_state:
-        st.session_state.master_notes = st.session_state.notes_widget
-
-def add_quick_note(text):
-    sync_notes()
-    st.session_state.master_notes += f"{text}. "
-    st.rerun()
-
-# --- 3. SIDEBAR: SHOP & EXCEL & TOOLS ---
+# --- 2. SIDEBAR: SHOP & DATA TOOLS ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
     
@@ -85,7 +73,7 @@ with st.sidebar:
 
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
 
-# --- 4. MAIN DASHBOARD ---
+# --- 3. MAIN DASHBOARD ---
 col_in, col_chart = st.columns([1, 1], gap="large")
 
 with col_in:
@@ -97,10 +85,9 @@ with col_in:
     m_choice = st.selectbox("Select Machine", ["+ New Machine"] + machines)
     m_id = st.text_input("Machine ID", value="" if m_choice == "+ New Machine" else m_choice)
 
-    # --- RESTORED: MULTI-COOLANT TOGGLE ---
+    # Multi-Coolant Toggle
     m_cool_toggle = st.toggle("Machine-specific product?")
     if m_cool_toggle:
-        # Get machine-specific coolant dropdown
         m_cool_choice = st.selectbox("Specific Coolant", ["+ New"] + coolants)
         active_coolant = st.text_input("Override Product", value="" if m_cool_choice == "+ New" else m_cool_choice)
     else:
@@ -118,8 +105,8 @@ with col_in:
     ri = c2.number_input("RI Factor", value=last_ri)
     
     c3, c4 = st.columns(2)
-    brix = c3.number_input("Brix", min_value=0.0)
-    ph = c4.number_input("pH", min_value=0.0)
+    brix = c3.number_input("Brix Reading", min_value=0.0)
+    ph = c4.number_input("pH Reading", min_value=0.0)
 
     actual_conc = round(brix * ri, 2)
     if brix > 0:
@@ -137,26 +124,15 @@ with col_chart:
             chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
             st.altair_chart(chart, use_container_width=True)
 
-# --- 5. OBSERVATIONS ---
+# --- 4. OBSERVATIONS (CLEAN VERSION) ---
 st.markdown("---")
-st.text_area("Notes", value=st.session_state.master_notes, key="notes_widget", on_change=sync_notes, height=120)
-
-btns = st.columns(6)
-if btns[0].button("pH Boost"): add_quick_note("Added pH Boost")
-if btns[1].button("Fungicide"): add_quick_note("Added Fungicide")
-if btns[2].button("Defoamer"): add_quick_note("Added Defoamer")
-if btns[3].button("Biocide"): add_quick_note("Added Biocide")
-if btns[4].button("DCR"): add_quick_note("Recommend DCR")
-if btns[5].button("🗑️ CLEAR"): 
-    st.session_state.master_notes = ""
-    st.rerun()
+# We removed the session state dependency for simpler direct input
+user_notes = st.text_area("Field Observations", height=150, placeholder="Type chemical additions or machine issues here...")
 
 if st.button("💾 SAVE LOG", use_container_width=True):
-    sync_notes()
     if customer and m_id:
         c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(date.today())))
+                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, user_notes, str(date.today())))
         conn.commit()
-        st.session_state.master_notes = ""
-        st.success(f"Saved {m_id}!")
+        st.success(f"Successfully saved {m_id}!")
         st.rerun()
