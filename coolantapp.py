@@ -5,15 +5,19 @@ import io
 import altair as alt
 from datetime import datetime, date
 
-# --- 1. DATABASE SETUP ---
-conn = sqlite3.connect('qualiserv_pro.db', check_same_thread=False)
+# --- 1. DATABASE & THEME ---
+DB_NAME = 'qualiserv_pro.db'
+
+def get_connection():
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
+
+conn = get_connection()
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS logs 
              (id INTEGER PRIMARY KEY AUTOINCREMENT, customer TEXT, coolant TEXT, m_id TEXT, 
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-# --- 2. THEMED CSS (FORCED CONTRAST) ---
 st.set_page_config(page_title="QualiServ Pro", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
@@ -30,65 +34,72 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. SESSION STATE LOGIC ---
+# --- 2. SESSION STATE LOGIC ---
 if "master_notes" not in st.session_state:
     st.session_state.master_notes = ""
 
 def sync_notes():
-    """Captures typed text into the master state."""
     if "notes_widget" in st.session_state:
         st.session_state.master_notes = st.session_state.notes_widget
 
 def add_quick_note(text):
-    """Updates state and reruns. Rerun avoids the StreamlitAPIException."""
     sync_notes()
     st.session_state.master_notes += f"{text}. "
     st.rerun()
 
-# --- 4. SIDEBAR: SHOP & EXCEL ---
+# --- 3. SIDEBAR: DATA MANAGEMENT ---
 with st.sidebar:
     st.markdown(f"<h1>QualiServ</h1>", unsafe_allow_html=True)
+    
+    # --- SHOP SELECT ---
     c.execute("SELECT DISTINCT customer FROM logs ORDER BY customer ASC")
     shops = [r[0] for r in c.fetchall() if r[0]]
     shop_choice = st.selectbox("Shop Selection", ["+ New Shop"] + shops)
     customer = st.text_input("Active Shop", value="" if shop_choice == "+ New Shop" else shop_choice)
     
     st.markdown("---")
-    c.execute("SELECT DISTINCT coolant FROM logs ORDER BY coolant ASC")
-    coolants = [r[0] for r in c.fetchall() if r[0]]
-    cool_choice = st.selectbox("Shop Base Product", ["+ New"] + coolants)
-    shop_coolant = st.text_input("Product Name", value="" if cool_choice == "+ New" else cool_choice)
     
-    t_conc = st.number_input("Target %", value=8.0)
-    t_ph = st.number_input("Min pH Target", value=8.8)
+    # --- IMPORT / EXPORT TOOLS ---
+    with st.expander("💾 DATA MANAGEMENT"):
+        # Export DB
+        with open(DB_NAME, 'rb') as f:
+            st.download_button("Download Database (.db)", f, file_name="qualiserv_backup.db")
+        
+        # Import DB
+        uploaded_db = st.file_uploader("Replace Database (.db)", type="db")
+        if uploaded_db:
+            with open(DB_NAME, "wb") as f:
+                f.write(uploaded_db.getbuffer())
+            st.success("Database Replaced. Refreshing...")
+            st.rerun()
 
-    if customer:
         st.markdown("---")
-        df_exp = pd.read_sql_query(f"SELECT * FROM logs WHERE customer='{customer}'", conn)
-        if not df_exp.empty:
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_exp.to_excel(writer, index=False, sheet_name='QualiServ')
-            st.download_button("📥 Export Excel Report", output.getvalue(), f"{customer}_Report.xlsx")
+        
+        # Import Excel
+        uploaded_xl = st.file_uploader("Bulk Import Excel", type="xlsx")
+        if uploaded_xl:
+            import_df = pd.read_excel(uploaded_xl)
+            import_df.to_sql('logs', conn, if_exists='append', index=False)
+            st.success("Data Appended!")
+            st.rerun()
 
+    st.markdown("---")
+    t_conc = st.number_input("Target %", value=8.0)
+    t_ph = st.number_input("Min pH", value=8.8)
+
+# --- 4. MAIN INTERFACE ---
 st.markdown(f"<h1>QualiServ <span class='green-text'>Pro</span></h1>", unsafe_allow_html=True)
-
-# --- 5. MAIN INTERFACE ---
 col_in, col_chart = st.columns([1, 1], gap="large")
 
 with col_in:
     st.markdown("### <span class='green-text'>Machine Data</span>", unsafe_allow_html=True)
     
+    # ID Selector & Recall
     c.execute("SELECT DISTINCT m_id FROM logs WHERE customer=? ORDER BY m_id ASC", (customer,))
     machines = [r[0] for r in c.fetchall() if r[0]]
     m_choice = st.selectbox("Select Machine", ["+ New Machine"] + machines)
     m_id = st.text_input("Confirm ID", value="" if m_choice == "+ New Machine" else m_choice)
 
-    # Multi-Coolant Override
-    m_cool_toggle = st.toggle("Machine-specific product?")
-    active_coolant = st.text_input("Specific Product", value=shop_coolant) if m_cool_toggle else shop_coolant
-
-    # Auto-Recall for Sump/RI
     last_vol, last_ri = 100.0, 1.0
     if m_choice != "+ New Machine":
         c.execute("SELECT vol, ri FROM logs WHERE m_id=? AND customer=? ORDER BY id DESC LIMIT 1", (m_id, customer))
@@ -123,7 +134,7 @@ with col_chart:
             chart = alt.Chart(hist).mark_line(color=QC_GREEN, point=True).encode(x='date:T', y='conc:Q').properties(height=350)
             st.altair_chart(chart, use_container_width=True)
 
-# --- 6. OBSERVATIONS (FIXED SYNC) ---
+# --- 5. OBSERVATIONS (FIXED SYNC) ---
 st.markdown("---")
 st.text_area("Observations", value=st.session_state.master_notes, key="notes_widget", on_change=sync_notes, height=120)
 
@@ -138,10 +149,10 @@ if btns[5].button("🗑️"):
     st.rerun()
 
 if st.button("💾 SAVE MACHINE LOG", use_container_width=True):
-    sync_notes() # Final grab of typed text
+    sync_notes()
     if customer and m_id:
-        c.execute("INSERT INTO logs (customer, coolant, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                  (customer, active_coolant, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(date.today())))
+        c.execute("INSERT INTO logs (customer, m_id, vol, ri, brix, conc, ph, notes, date) VALUES (?,?,?,?,?,?,?,?,?)",
+                  (customer, m_id, vol, ri, brix, actual_conc, ph, st.session_state.master_notes, str(date.today())))
         conn.commit()
         st.session_state.master_notes = ""
         st.success("Entry Saved.")
