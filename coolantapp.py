@@ -14,7 +14,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               vol REAL, ri REAL, brix REAL, conc REAL, ph REAL, notes TEXT, date TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="QualiServ Pro v67", layout="wide")
+st.set_page_config(page_title="QualiServ Pro v68", layout="wide")
 
 QC_BLUE, QC_DARK_BLUE, QC_GREEN = "#00529B", "#002D54", "#78BE20"
 
@@ -116,22 +116,27 @@ with col_in:
     brix = c3.number_input("Brix Reading ↵", min_value=0.0)
     ph = c4.number_input("pH Reading ↵", min_value=0.0)
 
-    # RESTORED: THE CALCULATION ENGINE
+    # UPDATED CALCULATION LOGIC
     actual_conc = round(brix * ri, 2)
+    
     if brix > 0:
         st.markdown("---")
+        # Calculating Gallon Delta
+        # Formula: ((Target % - Actual %) / 100) * Vol
+        gal_delta = round(((t_conc - actual_conc) / 100) * vol, 2)
+        
         m1, m2 = st.columns(2)
-        m1.metric("Conc", f"{actual_conc}%", delta=round(actual_conc - t_conc, 2))
+        # Metric shows Conc %, but the DELTA now shows Gallons
+        # Inverse the delta symbol for intuitive reading (Negative gal = over target)
+        m1.metric("Conc", f"{actual_conc}%", delta=f"{gal_delta} Gal", delta_color="inverse")
         m2.metric("pH", ph, delta=round(ph - t_ph, 2))
         
-        # Recommendations Logic
         if actual_conc < t_conc:
-            # Formula: ((Target - Actual) / 100) * Sump Volume
-            add_gal = round(((t_conc - actual_conc) / 100) * vol, 2)
-            st.warning(f"💡 **ACTION:** Add **{add_gal} Gal** of {active_coolant} concentrate.")
+            st.warning(f"💡 **ACTION:** Add **{gal_delta} Gal** of {active_coolant} concentrate.")
+        elif actual_conc > t_conc + 2.0:
+            st.info(f"🌊 **INFO:** Concentration is high. Top up with water only.")
         
         if 0 < ph < t_ph:
-            # Assuming standard dosage for pH boost (16oz per 100gal is common, adjust as needed)
             boost_oz = round((vol / 100) * 16, 1)
             st.error(f"🚨 **ACTION:** pH is low! Add **{boost_oz} oz** of pH Booster.")
 
